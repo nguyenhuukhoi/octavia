@@ -2454,6 +2454,139 @@ class TestLoadBalancer(base.BaseAPITest):
             self.LB_PATH.format(lb_id=lb_dict.get('id')) + "/failover"),
             status=202)
 
+    @mock.patch('octavia.api.v2.controllers.load_balancer.driver_utils.'
+                'call_provider')
+    @mock.patch('octavia.api.v2.controllers.load_balancer.driver_factory.'
+                'get_driver')
+    def test_resize(self, mock_get_driver, mock_call_provider):
+        mock_driver = mock.MagicMock()
+        mock_driver.name = 'noop_driver'
+        mock_get_driver.return_value = mock_driver
+        mock_call_provider.return_value = (mock.MagicMock(), [])
+
+        project_id = uuidutils.generate_uuid()
+        lb = self.create_load_balancer(uuidutils.generate_uuid(),
+                                       name='lb1',
+                                       project_id=project_id,
+                                       description='desc1',
+                                       admin_state_up=False)
+        lb_dict = lb.get(self.root_tag)
+        self.set_lb_status(lb_dict.get('id'))
+
+        fp = self.create_flavor_profile(
+            'resize-fp', 'noop_driver',
+            '{"loadbalancer_topology": "SINGLE"}')
+        flavor = self.create_flavor('resize-flavor', 'description',
+                                    fp.get('id'), True)
+
+        self.put(self.LB_PATH.format(lb_id=lb_dict.get('id')) + "/resize",
+                 {'new_flavor_id': flavor.get('id')}, status=202)
+
+        mock_get_driver.assert_called_with('noop_driver')
+        mock_call_provider.assert_has_calls([
+            mock.call('noop_driver', mock_driver.validate_flavor,
+                      {constants.LOADBALANCER_TOPOLOGY:
+                       constants.TOPOLOGY_SINGLE}),
+            mock.call('noop_driver',
+                      mock_driver.loadbalancer_failover_with_flavor,
+                      lb_dict.get('id'), flavor.get('id'))
+        ])
+
+    def test_resize_flavor_missing(self):
+        project_id = uuidutils.generate_uuid()
+        lb = self.create_load_balancer(uuidutils.generate_uuid(),
+                                       name='lb1',
+                                       project_id=project_id,
+                                       description='desc1',
+                                       admin_state_up=False)
+        lb_dict = lb.get(self.root_tag)
+        self.set_lb_status(lb_dict.get('id'))
+
+        response = self.put(
+            self.LB_PATH.format(lb_id=lb_dict.get('id')) + "/resize",
+            {'new_flavor_id': uuidutils.generate_uuid()}, status=400)
+
+        self.assertEqual('Validation failure: Invalid new_flavor_id.',
+                         response.json.get('faultstring'))
+
+    def test_resize_flavor_provider_mismatch(self):
+        project_id = uuidutils.generate_uuid()
+        lb = self.create_load_balancer(uuidutils.generate_uuid(),
+                                       name='lb1',
+                                       project_id=project_id,
+                                       description='desc1',
+                                       admin_state_up=False)
+        lb_dict = lb.get(self.root_tag)
+        self.set_lb_status(lb_dict.get('id'))
+
+        fp = self.create_flavor_profile(
+            'resize-fp', 'noop_driver-alt',
+            '{"loadbalancer_topology": "SINGLE"}')
+        flavor = self.create_flavor('resize-flavor', 'description',
+                                    fp.get('id'), True)
+
+        response = self.put(
+            self.LB_PATH.format(lb_id=lb_dict.get('id')) + "/resize",
+            {'new_flavor_id': flavor.get('id')}, status=400)
+
+        self.assertEqual(
+            "Flavor '{}' is not compatible with provider 'noop_driver'".format(
+                flavor.get('id')),
+            response.json.get('faultstring'))
+
+    def test_resize_flavor_topology_mismatch(self):
+        project_id = uuidutils.generate_uuid()
+        lb = self.create_load_balancer(uuidutils.generate_uuid(),
+                                       name='lb1',
+                                       project_id=project_id,
+                                       description='desc1',
+                                       admin_state_up=False)
+        lb_dict = lb.get(self.root_tag)
+        self.set_lb_status(lb_dict.get('id'))
+
+        fp = self.create_flavor_profile(
+            'resize-fp', 'noop_driver',
+            '{"loadbalancer_topology": "ACTIVE_STANDBY"}')
+        flavor = self.create_flavor('resize-flavor', 'description',
+                                    fp.get('id'), True)
+
+        response = self.put(
+            self.LB_PATH.format(lb_id=lb_dict.get('id')) + "/resize",
+            {'new_flavor_id': flavor.get('id')}, status=400)
+
+        self.assertEqual(
+            "Validation failure: Flavor '{}' is not compatible with load "
+            "balancer topology 'SINGLE'".format(flavor.get('id')),
+            response.json.get('faultstring'))
+
+    def test_resize_flavor_default_topology_mismatch(self):
+        project_id = uuidutils.generate_uuid()
+        lb = self.create_load_balancer(uuidutils.generate_uuid(),
+                                       name='lb1',
+                                       project_id=project_id,
+                                       description='desc1',
+                                       admin_state_up=False)
+        lb_dict = lb.get(self.root_tag)
+        self.set_lb_status(lb_dict.get('id'))
+        self.conf.config(
+            group='controller_worker',
+            loadbalancer_topology=constants.TOPOLOGY_ACTIVE_STANDBY)
+
+        fp = self.create_flavor_profile(
+            'resize-fp', 'noop_driver',
+            '{"compute_flavor": "flav2"}')
+        flavor = self.create_flavor('resize-flavor', 'description',
+                                    fp.get('id'), True)
+
+        response = self.put(
+            self.LB_PATH.format(lb_id=lb_dict.get('id')) + "/resize",
+            {'new_flavor_id': flavor.get('id')}, status=400)
+
+        self.assertEqual(
+            "Validation failure: Flavor '{}' is not compatible with load "
+            "balancer topology 'SINGLE'".format(flavor.get('id')),
+            response.json.get('faultstring'))
+
     def test_failover_not_authorized(self):
         project_id = uuidutils.generate_uuid()
         lb = self.create_load_balancer(uuidutils.generate_uuid(),

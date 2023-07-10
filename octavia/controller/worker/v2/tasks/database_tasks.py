@@ -3137,3 +3137,22 @@ class GetAmphoraFirewallRules(BaseDatabaseTask):
                                   constants.PORT: 112})
         LOG.debug('Amphora %s SR-IOV firewall rules: %s', this_amp_id, rules)
         return rules
+
+
+class UpdateFlavorIdInDB(BaseDatabaseTask):
+    """Update the flavor id of a load balancer after resize.
+
+    At the end of the failover worflow in resize mode it's required to
+    update the flavor of the load balancer.
+    """
+
+    def execute(self, loadbalancer_id, new_flavor_id):
+        with db_apis.session().begin() as session:
+            db_lb = self.loadbalancer_repo.get(session, id=loadbalancer_id)
+            LOG.info("Updating flavor_id of load balancer %s from %s to %s",
+                     loadbalancer_id,
+                     db_lb.flavor_id,
+                     new_flavor_id)
+
+            self.loadbalancer_repo.update(session, loadbalancer_id,
+                                          flavor_id=new_flavor_id)
